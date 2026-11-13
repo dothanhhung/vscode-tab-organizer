@@ -40,6 +40,7 @@ function loadState() {
     groups: Array.isArray(s.groups) ? s.groups : [],
     files: s.files && typeof s.files === 'object' ? s.files : {},
     opened: s.opened && typeof s.opened === 'object' ? s.opened : {},
+    ruleSkip: s.ruleSkip && typeof s.ruleSkip === 'object' ? s.ruleSkip : {},
   };
   // drop assignments that point at a deleted group
   const ids = new Set(state.groups.map((g) => g.id));
@@ -98,6 +99,15 @@ function openUri(uri, viewColumn) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let traceFn; // set by the integration tests only
+function trace(step) {
+  if (!traceFn) return;
+  const groups = vscode.window.tabGroups.all.map(
+    (g) => `${g.isActive ? '*' : ''}${g.viewColumn}:[${g.tabs.map((t) => t.label).join(',')}]`
+  );
+  traceFn(step + '  ' + groups.join(' '));
+}
 async function waitFor(fn, ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -301,7 +311,10 @@ async function cmdAssignGroup(arg, arg2) {
 
 function cmdRemoveFromGroup(arg, arg2) {
   const uris = resolveUris(arg, arg2);
-  for (const u of uris) delete state.files[u.toString()];
+  for (const u of uris) {
+    delete state.files[u.toString()];
+    state.ruleSkip[u.toString()] = true; // auto rules won't put it back
+  }
   changed();
 }
 
@@ -378,9 +391,20 @@ async function moveGroupToWindow(g) {
     return false;
   }
   const first = uris[0];
-  const existing = tabsFor(new Set([first.toString()]))[0];
-  const startCol = existing ? existing.group.viewColumn : vscode.window.tabGroups.all[0].viewColumn;
-  await openUri(first, startCol);
+  const isFirst = (t) => {
+    const u = t && tabUri(t);
+    return !!u && u.toString() === first.toString();
+  };
+  // After an earlier group moved out, focus sits in that floating window, and opening a
+  // file in a main-window column does not bring it back. Switch first, then open here.
+  try {
+    await vscode.commands.executeCommand('workbench.action.switchToMainWindow');
+  } catch {}
+  await openUri(first, vscode.ViewColumn.Active);
+  if (!(await waitFor(() => isFirst(vscode.window.tabGroups.activeTabGroup.activeTab), 3000))) {
+    vscode.window.showWarningMessage(`Tab Organizer: could not focus ${path.basename(first.path)}, so "${g.name}" was not moved.`);
+    return false;
+  }
   const before = vscode.window.tabGroups.activeTabGroup;
   try {
     await vscode.commands.executeCommand('workbench.action.moveEditorToNewWindow');
@@ -393,8 +417,13 @@ async function moveGroupToWindow(g) {
     return u && u.toString() === first.toString();
   });
   await waitFor(() => vscode.window.tabGroups.activeTabGroup !== before && hasFirst(vscode.window.tabGroups.activeTabGroup), 4000);
-  for (const u of uris.slice(1)) await openUri(u, vscode.ViewColumn.Active);
+  trace('moved first to new window');
+  for (const u of uris.slice(1)) {
+    await openUri(u, vscode.ViewColumn.Active);
+    trace('opened ' + path.basename(u.path));
+  }
   await closeOutside(uris, vscode.window.tabGroups.activeTabGroup);
+  trace('closed copies');
   return true;
 }
 
@@ -409,8 +438,8 @@ async function cmdMoveGroupToWindow(arg) {
   }
 }
 
-async function cmdMoveAllGroupsToWindows() {
-  const groups = state.groups.filter((g) => filesOf(g).length);
+async function moveGroupsToWindows(groups) {
+  groups = groups.filter((g) => filesOf(g).length);
   if (!groups.length) return vscode.window.showInformationMessage('Tab Organizer: no groups with files yet.');
   busy = true;
   try {
@@ -421,6 +450,319 @@ async function cmdMoveAllGroupsToWindows() {
   } finally {
     busy = false;
   }
+}
+
+const cmdMoveAllGroupsToWindows = () => moveGroupsToWindows(state.groups);
+
+// ---------- grouping helpers (rules, AI, undo) ----------
+
+let undoSnapshot;
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+function nextColor() {
+  const used = new Set(state.groups.map((g) => g.color));
+  const free = COLORS.find((c) => !used.has(c.id));
+  return (free || COLORS[state.groups.length % COLORS.length]).id;
+}
+
+function findOrCreateGroup(name, color) {
+  const clean = String(name || '').trim().slice(0, 40) || 'Other';
+  let g = state.groups.find((x) => x.name.toLowerCase() === clean.toLowerCase());
+  if (!g) {
+    g = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: clean, color: COLORS.some((c) => c.id === color) ? color : nextColor() };
+    state.groups.push(g);
+  }
+  return g;
+}
+
+/** Regroup `uris` as [{name,color,uris}] (one Undo step). */
+function applyGrouping(uris, assignments) {
+  undoSnapshot = clone(state);
+  const before = new Set(Object.values(state.files));
+  for (const u of uris) delete state.files[u.toString()];
+  for (const a of assignments) {
+    if (!a.uris.length) continue;
+    const g = findOrCreateGroup(a.name, a.color);
+    for (const u of a.uris) state.files[u.toString()] = g.id;
+  }
+  const after = new Set(Object.values(state.files));
+  state.groups = state.groups.filter((g) => after.has(g.id) || !before.has(g.id));
+  changed();
+}
+
+function cmdUndo() {
+  if (!undoSnapshot) return vscode.window.showInformationMessage('Tab Organizer: nothing to undo.');
+  state = undoSnapshot;
+  undoSnapshot = undefined;
+  changed();
+}
+
+/** Open file tabs, one entry per file. */
+function openFiles() {
+  const seen = new Map();
+  for (const t of allTabs()) {
+    const u = tabUri(t);
+    if (!u) continue;
+    const k = u.toString();
+    const prev = seen.get(k);
+    seen.set(k, { uri: u, dirty: (prev && prev.dirty) || t.isDirty });
+  }
+  return [...seen.values()];
+}
+
+const relPath = (u) => vscode.workspace.asRelativePath(u, false).replace(/\\/g, '/');
+const stemOf = (u) => path.basename(u.path).toLowerCase().replace(/\..*$/, '');
+
+const TAB_RULES = [
+  {
+    id: 'folder',
+    label: '$(folder) By folder',
+    description: 'the folder each file is in',
+    key: (f) => {
+      const parts = relPath(f.uri).split('/');
+      parts.pop();
+      return [parts.length ? parts.slice(-2).join('/') : '(root)'];
+    },
+  },
+  { id: 'type', label: '$(file-code) By file type', description: '.js / .html / .css / .md …', key: (f) => [(path.extname(f.uri.path).slice(1) || 'no extension').toUpperCase() + ' files'] },
+  { id: 'workspace', label: '$(root-folder) By workspace folder', description: 'for multi-root workspaces', key: (f) => [(vscode.workspace.getWorkspaceFolder(f.uri) || { name: 'Outside the workspace' }).name] },
+  { id: 'related', label: '$(link) Related files', description: 'same name: page.js + page.html + page.css', related: true },
+  { id: 'unsaved', label: '$(circle-large-filled) Unsaved changes', description: 'tabs with unsaved edits vs saved', key: (f) => (f.dirty ? ['Unsaved changes', 'red'] : ['Saved', 'gray']) },
+];
+
+function groupTabsByRule(rule) {
+  const files = openFiles();
+  let assignments;
+  if (rule.related) {
+    const byStem = new Map();
+    for (const f of files) {
+      const s = stemOf(f.uri);
+      if (!byStem.has(s)) byStem.set(s, []);
+      byStem.get(s).push(f.uri);
+    }
+    assignments = [];
+    const rest = [];
+    for (const [s, list] of byStem) {
+      if (list.length > 1) assignments.push({ name: s, uris: list });
+      else rest.push(...list);
+    }
+    if (rest.length) assignments.push({ name: 'Other files', color: 'gray', uris: rest });
+  } else {
+    const buckets = new Map();
+    for (const f of files) {
+      const [name, color] = rule.key(f);
+      if (!buckets.has(name)) buckets.set(name, { name, color, uris: [] });
+      buckets.get(name).uris.push(f.uri);
+    }
+    assignments = [...buckets.values()];
+  }
+  applyGrouping(files.map((f) => f.uri), assignments);
+  return { files: files.length, groups: assignments.length };
+}
+
+async function cmdRuleGroup() {
+  const pick = await vscode.window.showQuickPick(TAB_RULES, { placeHolder: 'Group the open tabs by…' });
+  if (!pick) return;
+  const r = groupTabsByRule(pick);
+  vscode.window.showInformationMessage(`Grouped ${r.files} tabs into ${r.groups} groups.`, 'Undo').then((b) => b && cmdUndo());
+}
+
+// ---------- auto rules: new tabs matching a pattern join a group ----------
+
+function applyAutoRules(uris) {
+  const rules = (vscode.workspace.getConfiguration('tabOrganizer').get('autoRules') || [])
+    .map((r) => {
+      try {
+        return { re: new RegExp(r.pattern, 'i'), group: r.group, color: r.color };
+      } catch {
+        return null;
+      }
+    })
+    .filter((r) => r && r.group);
+  if (!rules.length) return;
+  let hit = false;
+  for (const u of uris) {
+    const k = u.toString();
+    if (state.files[k] || state.ruleSkip[k]) continue;
+    const r = rules.find((x) => x.re.test(relPath(u)));
+    if (!r) continue;
+    state.files[k] = findOrCreateGroup(r.group, r.color).id;
+    hit = true;
+  }
+  if (hit) changed();
+}
+
+async function cmdAddAutoRule(arg, arg2) {
+  const uris = resolveUris(arg, arg2);
+  const pattern = await vscode.window.showInputBox({
+    prompt: 'Files whose path matches this (regex, case-insensitive) join a group as soon as they open',
+    placeHolder: 'e.g. ^public/juniors/|kids',
+    value: uris[0] ? path.posix.dirname(relPath(uris[0])) + '/' : '',
+  });
+  if (!pattern) return;
+  try {
+    new RegExp(pattern, 'i');
+  } catch (e) {
+    return vscode.window.showErrorMessage('Not a valid pattern: ' + e.message);
+  }
+  const items = state.groups.map((g) => ({ label: `${colorInfo(g.color).emoji} ${g.name}`, g }));
+  items.push({ label: '$(add) New group…', create: true });
+  const p = await vscode.window.showQuickPick(items, { placeHolder: `Files matching /${pattern}/ go to…` });
+  if (!p) return;
+  const g = p.create ? await createGroup() : p.g;
+  if (!g) return;
+  const c = vscode.workspace.getConfiguration('tabOrganizer');
+  const rules = (c.get('autoRules') || []).filter((r) => r.pattern !== pattern);
+  rules.push({ pattern, group: g.name, color: g.color });
+  await c.update('autoRules', rules, vscode.ConfigurationTarget.Global);
+  applyAutoRules(openFiles().map((f) => f.uri));
+}
+
+// ---------- AI grouping (runs `claude -p` on your logged-in Claude plan, never an API key) ----------
+
+function claudeCommand() {
+  const custom = vscode.workspace.getConfiguration('tabOrganizer').get('claudePath');
+  if (custom) return { cmd: custom, shell: /\.(cmd|bat|ps1)$/i.test(custom) || !path.isAbsolute(custom) };
+  const ext = vscode.extensions.getExtension('anthropic.claude-code');
+  if (ext) {
+    const p = path.join(ext.extensionPath, 'resources', 'native-binary', process.platform === 'win32' ? 'claude.exe' : 'claude');
+    if (fs.existsSync(p)) return { cmd: p, shell: false };
+  }
+  return { cmd: 'claude', shell: true };
+}
+
+function runClaude(prompt, token) {
+  const cp = require('child_process');
+  const os = require('os');
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']) delete env[k];
+    const { cmd, shell } = claudeCommand();
+    const model = vscode.workspace.getConfiguration('tabOrganizer').get('aiModel') || 'haiku';
+    let args = ['-p', '--model', model, '--output-format', 'json', '--tools', '', '--no-session-persistence', '--system-prompt', 'You sort editor tabs into groups. You never use tools. You answer with one JSON object and nothing else.'];
+    if (shell) args = args.map((a) => '"' + a.replace(/"/g, '\\"') + '"');
+    const child = cp.spawn(shell ? `"${cmd}"` : cmd, args, { cwd: os.tmpdir(), env, shell, windowsHide: true });
+    let out = '', err = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('claude took longer than 4 minutes.'));
+    }, 240000);
+    const sub = token && token.onCancellationRequested(() => {
+      child.kill();
+      reject(new Error('Cancelled.'));
+    });
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(new Error('Could not start claude (install Claude Code, or set tabOrganizer.claudePath): ' + e.message));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (sub) sub.dispose();
+      let res;
+      try {
+        res = JSON.parse(out);
+      } catch {
+        return reject(new Error(`claude exited ${code}: ${(err || out).trim().slice(0, 300)}`));
+      }
+      if (res.is_error) return reject(new Error('claude: ' + String(res.result || res.subtype).slice(0, 300)));
+      resolve(String(res.result || ''));
+    });
+    child.stdin.end(prompt, 'utf8');
+  });
+}
+
+async function cmdAiGroup() {
+  const files = openFiles();
+  if (!files.length) return vscode.window.showInformationMessage('Tab Organizer: no file tabs open.');
+  const c = vscode.workspace.getConfiguration('tabOrganizer');
+  const history = ctx.globalState.get('tabOrganizer.aiHistory', []);
+  const items = [
+    ...history.map((h) => ({ label: '$(history) ' + h, value: h })),
+    ...(c.get('aiPresets') || []).map((p) => ({ label: '$(sparkle) ' + p, value: p })),
+    { label: '$(edit) Write my own…', custom: true },
+  ];
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: 'How should AI group your open tabs?' });
+  if (!pick) return;
+  let instruction = pick.value;
+  if (pick.custom) {
+    instruction = await vscode.window.showInputBox({ prompt: 'Tell AI how to group the tabs', placeHolder: 'e.g. by feature: login, payments, reports' });
+    if (!instruction || !instruction.trim()) return;
+    instruction = instruction.trim();
+  }
+  await ctx.globalState.update('tabOrganizer.aiHistory', [instruction, ...history.filter((h) => h !== instruction)].slice(0, 8));
+  const prompt = [
+    'Group these open editor tabs the way I ask.',
+    'MY INSTRUCTION: ' + instruction,
+    state.groups.length ? 'Existing group names (reuse one when it fits): ' + JSON.stringify(state.groups.map((g) => g.name)) : '',
+    'Colours you may use: ' + COLORS.map((x) => x.id).join(', ') + '.',
+    'Files (id: workspace-relative path):',
+    ...files.map((f, i) => `f${i + 1}: ${relPath(f.uri)}`),
+    'Every file goes in exactly one group. Group names: 1-3 words. Different colour per group.',
+    'Answer with ONLY this JSON: {"groups":[{"name":"…","color":"blue","files":["f1","f3"]}]}',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  let text;
+  try {
+    text = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Claude is grouping ${files.length} tabs…`, cancellable: true },
+      (_p, token) => runClaude(prompt, token)
+    );
+  } catch (e) {
+    if (e.message !== 'Cancelled.') vscode.window.showErrorMessage('Tab Organizer: AI grouping failed — ' + e.message);
+    return;
+  }
+  let obj;
+  try {
+    obj = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+  } catch {
+    return vscode.window.showErrorMessage('Tab Organizer: AI answer was not JSON.');
+  }
+  const seen = new Set();
+  const assignments = (obj.groups || []).map((g) => ({
+    name: g.name,
+    color: g.color,
+    uris: (g.files || [])
+      .map((id) => files[parseInt(String(id).replace(/^f/i, ''), 10) - 1])
+      .filter((f) => f && !seen.has(f.uri.toString()) && seen.add(f.uri.toString()))
+      .map((f) => f.uri),
+  }));
+  const missed = files.filter((f) => !seen.has(f.uri.toString())).map((f) => f.uri);
+  if (missed.length) assignments.push({ name: 'Other', color: 'gray', uris: missed });
+  applyGrouping(files.map((f) => f.uri), assignments);
+  vscode.window.showInformationMessage(`AI grouped ${files.length} tabs into ${assignments.filter((a) => a.uris.length).length} groups.`, 'Open each in its own window', 'Undo').then((b) => {
+    if (b === 'Undo') cmdUndo();
+    else if (b) cmdMoveAllGroupsToWindows();
+  });
+}
+
+// ---------- window layouts ----------
+
+async function cmdSaveLayout() {
+  const groups = state.groups.filter((g) => filesOf(g).length);
+  if (!groups.length) return vscode.window.showInformationMessage('Tab Organizer: no groups to save.');
+  const picks = await vscode.window.showQuickPick(
+    groups.map((g) => ({ label: `${colorInfo(g.color).emoji} ${g.name}`, picked: true, g })),
+    { canPickMany: true, placeHolder: 'Which groups belong to this layout (each opens in its own window)?' }
+  );
+  if (!picks || !picks.length) return;
+  const name = await vscode.window.showInputBox({ prompt: 'Layout name' });
+  if (!name || !name.trim()) return;
+  const layouts = ctx.workspaceState.get('tabOrganizer.layouts', []).filter((l) => l.name !== name.trim());
+  layouts.push({ name: name.trim(), groups: picks.map((p) => p.g.id) });
+  await ctx.workspaceState.update('tabOrganizer.layouts', layouts);
+}
+
+async function cmdRestoreLayout() {
+  const layouts = ctx.workspaceState.get('tabOrganizer.layouts', []);
+  if (!layouts.length) return vscode.window.showInformationMessage('Tab Organizer: no saved layouts yet.');
+  const p = await vscode.window.showQuickPick(
+    layouts.map((l) => ({ label: l.name, description: l.groups.map((id) => (groupById(id) || {}).name).filter(Boolean).join(' · '), l })),
+    { placeHolder: 'Open which layout?' }
+  );
+  if (p) await moveGroupsToWindows(p.l.groups.map(groupById).filter(Boolean));
 }
 
 // ---------- tree view ----------
@@ -491,6 +833,7 @@ function onTabsChanged(e) {
     if (u && !isOpen(u)) delete state.opened[u.toString()];
   }
   if (e.opened.length || e.closed.length) save();
+  if (e.opened.length) applyAutoRules(e.opened.map(tabUri).filter(Boolean));
   refreshTree();
 
   if (!busy && e.opened.length && vscode.workspace.getConfiguration('tabOrganizer').get('autoSortOnOpen')) {
@@ -548,19 +891,26 @@ function activate(context) {
   reg('tabOrganizer.moveAllGroupsToWindows', cmdMoveAllGroupsToWindows);
   reg('tabOrganizer.closeGroup', cmdCloseGroup);
   reg('tabOrganizer.openFile', (uri) => vscode.commands.executeCommand('vscode.open', uri, { preview: false }));
+  reg('tabOrganizer.ruleGroup', cmdRuleGroup);
+  reg('tabOrganizer.aiGroup', cmdAiGroup);
+  reg('tabOrganizer.undo', cmdUndo);
+  reg('tabOrganizer.addAutoRule', cmdAddAutoRule);
+  reg('tabOrganizer.saveLayout', cmdSaveLayout);
+  reg('tabOrganizer.restoreLayout', cmdRestoreLayout);
 
+  const decorations = {
+    onDidChangeFileDecorations: decoEmitter.event,
+    provideFileDecoration(uri) {
+      const g = groupOf(uri);
+      if (!g) return undefined;
+      const badge = vscode.workspace.getConfiguration('tabOrganizer').get('showBadge') ? '●' : undefined;
+      const d = new vscode.FileDecoration(badge, `Group: ${g.name}`, themeColor(g.color));
+      d.propagate = false;
+      return d;
+    },
+  };
   context.subscriptions.push(
-    vscode.window.registerFileDecorationProvider({
-      onDidChangeFileDecorations: decoEmitter.event,
-      provideFileDecoration(uri) {
-        const g = groupOf(uri);
-        if (!g) return undefined;
-        const badge = vscode.workspace.getConfiguration('tabOrganizer').get('showBadge') ? '●' : undefined;
-        const d = new vscode.FileDecoration(badge, `Group: ${g.name}`, themeColor(g.color));
-        d.propagate = false;
-        return d;
-      },
-    }),
+    vscode.window.registerFileDecorationProvider(decorations),
     vscode.window.createTreeView('tabOrganizer.groups', { treeDataProvider: treeProvider, showCollapseAll: true }),
     vscode.window.tabGroups.onDidChangeTabs(onTabsChanged),
     vscode.window.tabGroups.onDidChangeTabGroups(refreshTree),
@@ -571,6 +921,22 @@ function activate(context) {
     decoEmitter,
     treeEmitter
   );
+
+  // used by the integration tests only
+  return {
+    __test: {
+      state: () => state,
+      createGroup,
+      assign,
+      sortAll,
+      filesOf,
+      decoration: (uri) => decorations.provideFileDecoration(uri),
+      setTrace: (fn) => (traceFn = fn),
+      groupTabsByRule: (id) => groupTabsByRule(TAB_RULES.find((r) => r.id === id)),
+      applyAutoRules,
+      undo: cmdUndo,
+    },
+  };
 }
 
 function deactivate() {

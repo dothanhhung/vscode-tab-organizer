@@ -18,6 +18,11 @@ Sort editor tabs by **date created**, mark them with **colours / groups**, and o
   - **Open Every Group in Its Own Window** (title-bar button) — one window per group.
   - **Open Group in a Split** — gathers the group into a new editor group on the right.
   - **Close Group's Tabs**, **Rename**, **Change Colour**, **Delete Group** (files are never touched).
+- **Group by rule** (one click, no AI): by folder, by file type, by workspace folder, **related files** (same name: `page.js` + `page.html` + `page.css`), **unsaved changes**.
+- **AI: Group Tabs…**: a preset or your own instruction ("by feature: login, payments, reports"). Runs `claude -p` with your Claude Code login (default model `haiku`). An `ANTHROPIC_API_KEY` is never used. Needs Claude Code installed.
+- **Auto-group rules**: files whose path matches a pattern join a group as soon as their tab opens (`tabOrganizer.autoRules`, or right-click a tab → Add Auto-Group Rule…).
+- **Undo Last Grouping** after any rule or AI grouping.
+- **Save Window Layout… / Open Window Layout…**: a named set of groups, each opened in its own window.
 - Groups are saved per workspace and follow files when you rename/move them.
 
 ## Commands
@@ -34,6 +39,11 @@ All under `Tab Organizer:` in the Command Palette:
 | Open Group in New Window / in a Split | |
 | Open Every Group in Its Own Window | |
 | Close Group's Tabs | |
+| Group Tabs by Rule… | folder / file type / workspace folder / related files / unsaved |
+| AI: Group Tabs… | uses your Claude Code login |
+| Add Auto-Group Rule… | pattern → group, applied when tabs open |
+| Undo Last Grouping | |
+| Save / Open Window Layout… | |
 
 ## Settings
 
@@ -42,6 +52,10 @@ All under `Tab Organizer:` in the Command Palette:
 | `tabOrganizer.sortDirection` | `ascending` | oldest first |
 | `tabOrganizer.autoSortOnOpen` | `false` | re-sort by date created whenever a tab opens |
 | `tabOrganizer.showBadge` | `true` | `●` badge next to grouped tabs |
+| `tabOrganizer.autoRules` | `[]` | `{ "pattern": "^src/api/", "group": "API", "color": "blue" }` |
+| `tabOrganizer.aiModel` | `haiku` | model for AI grouping |
+| `tabOrganizer.aiPresets` | 3 presets | ready-made AI instructions |
+| `tabOrganizer.claudePath` | | path to `claude` if not found automatically |
 
 The 9 colours are theme colours (`tabOrganizer.red`, `.blue`, …) — change them in `workbench.colorCustomizations`.
 
@@ -55,7 +69,7 @@ The 9 colours are theme colours (`tabOrganizer.red`, `.blue`, …) — change th
 
 ```
 npx @vscode/vsce package
-code --install-extension tab-organizer-0.1.0.vsix
+code --install-extension tab-organizer-0.2.0.vsix
 ```
 
 ## License

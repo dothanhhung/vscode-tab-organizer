@@ -2,7 +2,7 @@
   "name": "tab-organizer",
   "displayName": "Tab Organizer",
   "description": "Sort editor tabs by date created, colour them into groups, and open each group in its own window.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "dothanhhung",
   "license": "MIT",
   "repository": {
@@ -30,7 +30,13 @@
       { "command": "tabOrganizer.moveGroupToWindow", "title": "Open Group in New Window", "category": "Tab Organizer", "icon": "$(window)" },
       { "command": "tabOrganizer.moveAllGroupsToWindows", "title": "Open Every Group in Its Own Window", "category": "Tab Organizer", "icon": "$(multiple-windows)" },
       { "command": "tabOrganizer.closeGroup", "title": "Close Group's Tabs", "category": "Tab Organizer", "icon": "$(close-all)" },
-      { "command": "tabOrganizer.openFile", "title": "Open", "category": "Tab Organizer" }
+      { "command": "tabOrganizer.openFile", "title": "Open", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.ruleGroup", "title": "Group Tabs by Rule…", "category": "Tab Organizer", "icon": "$(list-tree)" },
+      { "command": "tabOrganizer.aiGroup", "title": "AI: Group Tabs…", "category": "Tab Organizer", "icon": "$(sparkle)" },
+      { "command": "tabOrganizer.undo", "title": "Undo Last Grouping", "category": "Tab Organizer", "icon": "$(discard)" },
+      { "command": "tabOrganizer.addAutoRule", "title": "Add Auto-Group Rule…", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.saveLayout", "title": "Save Window Layout…", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.restoreLayout", "title": "Open Window Layout…", "category": "Tab Organizer", "icon": "$(layout)" }
     ],
     "views": {
       "explorer": [
@@ -41,7 +47,13 @@
       "view/title": [
         { "command": "tabOrganizer.sortTabs", "when": "view == tabOrganizer.groups", "group": "navigation@1" },
         { "command": "tabOrganizer.newGroup", "when": "view == tabOrganizer.groups", "group": "navigation@2" },
-        { "command": "tabOrganizer.moveAllGroupsToWindows", "when": "view == tabOrganizer.groups", "group": "navigation@3" }
+        { "command": "tabOrganizer.moveAllGroupsToWindows", "when": "view == tabOrganizer.groups", "group": "navigation@3" },
+        { "command": "tabOrganizer.ruleGroup", "when": "view == tabOrganizer.groups", "group": "navigation@4" },
+        { "command": "tabOrganizer.aiGroup", "when": "view == tabOrganizer.groups", "group": "navigation@5" },
+        { "command": "tabOrganizer.undo", "when": "view == tabOrganizer.groups", "group": "1_more@1" },
+        { "command": "tabOrganizer.addAutoRule", "when": "view == tabOrganizer.groups", "group": "1_more@2" },
+        { "command": "tabOrganizer.saveLayout", "when": "view == tabOrganizer.groups", "group": "2_layout@1" },
+        { "command": "tabOrganizer.restoreLayout", "when": "view == tabOrganizer.groups", "group": "2_layout@2" }
       ],
       "view/item/context": [
         { "command": "tabOrganizer.moveGroupToWindow", "when": "view == tabOrganizer.groups && viewItem == group", "group": "inline@1" },
@@ -59,7 +71,8 @@
       "editor/title/context": [
         { "command": "tabOrganizer.assignGroup", "group": "9_tabOrganizer@1" },
         { "command": "tabOrganizer.removeFromGroup", "group": "9_tabOrganizer@2" },
-        { "command": "tabOrganizer.sortByCreated", "group": "9_tabOrganizer@3" }
+        { "command": "tabOrganizer.sortByCreated", "group": "9_tabOrganizer@3" },
+        { "command": "tabOrganizer.addAutoRule", "group": "9_tabOrganizer@4" }
       ],
       "explorer/context": [
         { "command": "tabOrganizer.assignGroup", "when": "!explorerResourceIsFolder", "group": "9_tabOrganizer" }
@@ -82,6 +95,39 @@
           "type": "boolean",
           "default": false,
           "description": "Re-sort a tab row by date created every time a tab opens."
+        },
+        "tabOrganizer.autoRules": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "properties": {
+              "pattern": { "type": "string", "description": "Regex, case-insensitive, tested on the workspace-relative path" },
+              "group": { "type": "string" },
+              "color": { "type": "string" }
+            }
+          },
+          "description": "Files matching a pattern join that group as soon as their tab opens."
+        },
+        "tabOrganizer.aiModel": {
+          "type": "string",
+          "default": "haiku",
+          "description": "Model for AI: Group Tabs (runs `claude -p` with your Claude Code login; an ANTHROPIC_API_KEY is never used)."
+        },
+        "tabOrganizer.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the claude executable. Empty = the one bundled with the Claude Code extension, then `claude` on PATH."
+        },
+        "tabOrganizer.aiPresets": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "By feature / area of the product",
+            "By task: what I'm fixing now, reference, config, tests, docs",
+            "By layer: front-end, back-end, database, scripts"
+          ],
+          "description": "Ready-made instructions shown in \"AI: Group Tabs…\"."
         },
         "tabOrganizer.showBadge": {
           "type": "boolean",
