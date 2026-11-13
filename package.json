@@ -1,0 +1,105 @@
+{
+  "name": "tab-organizer",
+  "displayName": "Tab Organizer",
+  "description": "Sort editor tabs by date created, colour them into groups, and open each group in its own window.",
+  "version": "0.1.0",
+  "publisher": "dothanhhung",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dothanhhung/vscode-tab-organizer"
+  },
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["tabs", "sort", "group", "color", "window"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "tabOrganizer.sortTabs", "title": "Sort Tabs…", "category": "Tab Organizer", "icon": "$(list-ordered)" },
+      { "command": "tabOrganizer.sortByCreated", "title": "Sort Tabs by Date Created", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.assignGroup", "title": "Add to Group / Colour…", "category": "Tab Organizer", "icon": "$(symbol-color)" },
+      { "command": "tabOrganizer.removeFromGroup", "title": "Remove from Group", "category": "Tab Organizer", "icon": "$(close)" },
+      { "command": "tabOrganizer.newGroup", "title": "New Group…", "category": "Tab Organizer", "icon": "$(add)" },
+      { "command": "tabOrganizer.renameGroup", "title": "Rename Group…", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.setGroupColor", "title": "Change Group Colour…", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.deleteGroup", "title": "Delete Group", "category": "Tab Organizer" },
+      { "command": "tabOrganizer.openGroup", "title": "Open Group in a Split", "category": "Tab Organizer", "icon": "$(split-horizontal)" },
+      { "command": "tabOrganizer.moveGroupToWindow", "title": "Open Group in New Window", "category": "Tab Organizer", "icon": "$(window)" },
+      { "command": "tabOrganizer.moveAllGroupsToWindows", "title": "Open Every Group in Its Own Window", "category": "Tab Organizer", "icon": "$(multiple-windows)" },
+      { "command": "tabOrganizer.closeGroup", "title": "Close Group's Tabs", "category": "Tab Organizer", "icon": "$(close-all)" },
+      { "command": "tabOrganizer.openFile", "title": "Open", "category": "Tab Organizer" }
+    ],
+    "views": {
+      "explorer": [
+        { "id": "tabOrganizer.groups", "name": "Tab Groups" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "tabOrganizer.sortTabs", "when": "view == tabOrganizer.groups", "group": "navigation@1" },
+        { "command": "tabOrganizer.newGroup", "when": "view == tabOrganizer.groups", "group": "navigation@2" },
+        { "command": "tabOrganizer.moveAllGroupsToWindows", "when": "view == tabOrganizer.groups", "group": "navigation@3" }
+      ],
+      "view/item/context": [
+        { "command": "tabOrganizer.moveGroupToWindow", "when": "view == tabOrganizer.groups && viewItem == group", "group": "inline@1" },
+        { "command": "tabOrganizer.openGroup", "when": "view == tabOrganizer.groups && viewItem == group", "group": "inline@2" },
+        { "command": "tabOrganizer.closeGroup", "when": "view == tabOrganizer.groups && viewItem == group", "group": "inline@3" },
+        { "command": "tabOrganizer.moveGroupToWindow", "when": "view == tabOrganizer.groups && viewItem == group", "group": "1_open@1" },
+        { "command": "tabOrganizer.openGroup", "when": "view == tabOrganizer.groups && viewItem == group", "group": "1_open@2" },
+        { "command": "tabOrganizer.closeGroup", "when": "view == tabOrganizer.groups && viewItem == group", "group": "1_open@3" },
+        { "command": "tabOrganizer.renameGroup", "when": "view == tabOrganizer.groups && viewItem == group", "group": "2_edit@1" },
+        { "command": "tabOrganizer.setGroupColor", "when": "view == tabOrganizer.groups && viewItem == group", "group": "2_edit@2" },
+        { "command": "tabOrganizer.deleteGroup", "when": "view == tabOrganizer.groups && viewItem == group", "group": "3_delete@1" },
+        { "command": "tabOrganizer.removeFromGroup", "when": "view == tabOrganizer.groups && viewItem == groupFile", "group": "inline" },
+        { "command": "tabOrganizer.assignGroup", "when": "view == tabOrganizer.groups && viewItem =~ /File$/", "group": "1_group" }
+      ],
+      "editor/title/context": [
+        { "command": "tabOrganizer.assignGroup", "group": "9_tabOrganizer@1" },
+        { "command": "tabOrganizer.removeFromGroup", "group": "9_tabOrganizer@2" },
+        { "command": "tabOrganizer.sortByCreated", "group": "9_tabOrganizer@3" }
+      ],
+      "explorer/context": [
+        { "command": "tabOrganizer.assignGroup", "when": "!explorerResourceIsFolder", "group": "9_tabOrganizer" }
+      ],
+      "commandPalette": [
+        { "command": "tabOrganizer.openFile", "when": "false" }
+      ]
+    },
+    "configuration": {
+      "title": "Tab Organizer",
+      "properties": {
+        "tabOrganizer.sortDirection": {
+          "type": "string",
+          "enum": ["ascending", "descending"],
+          "enumDescriptions": ["Oldest / A first", "Newest / Z first"],
+          "default": "ascending",
+          "description": "Direction for \"Sort Tabs by Date Created\" and auto-sort."
+        },
+        "tabOrganizer.autoSortOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Re-sort a tab row by date created every time a tab opens."
+        },
+        "tabOrganizer.showBadge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a ● badge on grouped tabs (in addition to the coloured label)."
+        }
+      }
+    },
+    "colors": [
+      { "id": "tabOrganizer.red",    "description": "Tab group: red",    "defaults": { "dark": "#ff6b6b", "light": "#d32f2f", "highContrast": "#ff6b6b" } },
+      { "id": "tabOrganizer.orange", "description": "Tab group: orange", "defaults": { "dark": "#ffa94d", "light": "#e65100", "highContrast": "#ffa94d" } },
+      { "id": "tabOrganizer.yellow", "description": "Tab group: yellow", "defaults": { "dark": "#ffd43b", "light": "#a67c00", "highContrast": "#ffd43b" } },
+      { "id": "tabOrganizer.green",  "description": "Tab group: green",  "defaults": { "dark": "#69db7c", "light": "#2e7d32", "highContrast": "#69db7c" } },
+      { "id": "tabOrganizer.teal",   "description": "Tab group: teal",   "defaults": { "dark": "#38d9a9", "light": "#00796b", "highContrast": "#38d9a9" } },
+      { "id": "tabOrganizer.blue",   "description": "Tab group: blue",   "defaults": { "dark": "#4dabf7", "light": "#1565c0", "highContrast": "#4dabf7" } },
+      { "id": "tabOrganizer.purple", "description": "Tab group: purple", "defaults": { "dark": "#b197fc", "light": "#6a1b9a", "highContrast": "#b197fc" } },
+      { "id": "tabOrganizer.pink",   "description": "Tab group: pink",   "defaults": { "dark": "#f783ac", "light": "#ad1457", "highContrast": "#f783ac" } },
+      { "id": "tabOrganizer.gray",   "description": "Tab group: gray",   "defaults": { "dark": "#adb5bd", "light": "#616161", "highContrast": "#adb5bd" } }
+    ]
+  }
+}
